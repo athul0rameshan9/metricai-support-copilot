@@ -10,10 +10,26 @@ The interesting question this repo tries to answer is not "can an agent answer a
 support ticket" — it can — but **what does each ticket cost, where does the money
 go, and does that leave a margin.**
 
+## Stack
+
+- **Python 3.10+**, standard library only for the agent itself — no LangChain, no
+  LlamaIndex, no framework. The workflow is a plain class with explicit steps, so
+  every LLM call is visible at the call site and easy to attribute.
+- **[MetricAI](https://metricai.co.in) `metricai==0.8.4`** — BYOK proxy for
+  metering, attribution and in-path budget caps.
+- **`openai>=1.40`** — Azure OpenAI client for the smart tier (drafting).
+- **`google-genai>=1.0`** — Gemini client for the cheap tier (triage, critique,
+  summarise).
+- **`python-dotenv`** for config, **`tabulate`** for the report tables.
+- Storage is files: `out/ledger.jsonl` (shadow ledger) and `out/report.md`. No
+  database, no server, no vector store — the KB is a dict in `src/kb.py`.
+
 ## The workflow
 
 ```
 ticket ──▶ triage (cheap model = Gemini)
+              │
+              ├──▶ check_outage_status (tool, free) — only if category = outage
               │
               ▼
           retrieve (local KB, free)
@@ -30,7 +46,9 @@ ticket ──▶ triage (cheap model = Gemini)
 
 One ticket = one MetricAI **session**. Each box is a distinct **node_id**, so
 "which step is eating the budget" is answerable in the dashboard without reading
-any code.
+any code. The tool call is reported through `mc.track(...)` as
+`tool:check_outage_status`, so non-LLM steps sit beside the LLM ones in MetricAI's
+Tools tab.
 
 ### Plans, and why they differ
 
@@ -114,7 +132,8 @@ anything.
 
 ## Scenarios
 
-**baseline** — 12 tickets across 3 tenants. Produces the cost-per-ticket,
+**baseline** — 15 tickets across 3 tenants (3 of them outage tickets that
+exercise the tool call). Produces the cost-per-ticket,
 cost-per-step and margin tables.
 
 **runaway** — points repeated expensive calls at one session with a ₹2 cap. The
@@ -123,7 +142,7 @@ zero. A non-zero overshoot means the cap is evaluated after the fact rather than
 in the request path — which matters, because in-path enforcement is the headline
 claim.
 
-**model-swap** — the same 12 tickets with the cheap model forced on the draft
+**model-swap** — the same 15 tickets with the cheap model forced on the draft
 step. Quantifies the saving so the quality trade-off can be argued with a number
 attached.
 
@@ -144,8 +163,10 @@ src/llm.py        MetricAI-instrumented Azure client, plus a mock client
 src/workflow.py   the agent
 src/kb.py         tiny knowledge base
 src/tickets.py    seeded tickets
+src/tools.py      fake non-LLM tool (status-page check)
 src/ledger.py     shadow ledger
 src/report.py     cost / margin / waste report
 src/run.py        scenario runner
 docs/FINDINGS.md  integration experience and product feedback
+docs/LIVE_RUN_CHECKLIST.md  ordered steps for the live (non-mock) run
 ```

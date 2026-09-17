@@ -1,6 +1,6 @@
 """Scenario runner.
 
-    python -m src.run baseline   --mock     # 12 tickets, 3 tenants, 3 plans
+    python -m src.run baseline   --mock     # 15 tickets, 3 tenants, 3 plans
     python -m src.run runaway    --mock     # deliberately breach a budget cap
     python -m src.run model-swap --mock     # same tickets, cheap drafts
     python -m src.run report                # rebuild the report from the ledger
