@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 Tier = Literal["cheap", "smart"]
+Provider = Literal["gemini", "azure_openai"]
 
 METRICAI_API_KEY = os.getenv("METRICAI_API_KEY", "")
 METRICAI_BASE_URL = os.getenv("METRICAI_BASE_URL") or None
@@ -22,8 +23,18 @@ AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
 AZURE_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Each tier is served by a different provider: the cheap tier (triage /
+# critique / summarise) runs on Gemini, the smart tier (drafting) on Azure.
+PROVIDERS: dict[Tier, Provider] = {
+    "cheap": "gemini",
+    "smart": "azure_openai",
+}
+
+# Model name for Gemini; *deployment* name (not model name) for Azure.
 DEPLOYMENTS: dict[Tier, str] = {
-    "cheap": os.getenv("AZURE_DEPLOYMENT_CHEAP", "gpt-4o-mini"),
+    "cheap": os.getenv("GEMINI_MODEL_CHEAP", "gemini-3.6-flash"),
     "smart": os.getenv("AZURE_DEPLOYMENT_SMART", "gpt-4o"),
 }
 
@@ -32,8 +43,8 @@ USD_INR = float(os.getenv("USD_INR", "88.0"))
 # USD per 1M tokens -> INR per token, computed once.
 _PRICES_USD_PMT: dict[Tier, tuple[float, float]] = {
     "cheap": (
-        float(os.getenv("PRICE_CHEAP_IN_USD_PMT", "0.15")),
-        float(os.getenv("PRICE_CHEAP_OUT_USD_PMT", "0.60")),
+        float(os.getenv("PRICE_CHEAP_IN_USD_PMT", "1.50")),
+        float(os.getenv("PRICE_CHEAP_OUT_USD_PMT", "7.50")),
     ),
     "smart": (
         float(os.getenv("PRICE_SMART_IN_USD_PMT", "2.50")),

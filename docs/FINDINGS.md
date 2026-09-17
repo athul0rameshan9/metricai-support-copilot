@@ -18,7 +18,8 @@ Deliberate design choices made to generate *observable* behaviour:
 - **A quality-gated retry loop.** A critique step scores each draft; a low score
   triggers a re-draft. This produces genuine waste — money spent on answers the
   user never sees — which is exactly the pathology a cost tool should catch.
-- **Tier-dependent model routing.** Free tier drafts on the cheap model,
+- **Tier-dependent model routing.** Free tier drafts on the cheap model
+  (Gemini Flash; the smart tier is Azure `gpt-4o`),
   paid tiers on the expensive one. Cost to serve therefore differs by customer,
   which is what makes a margin table mean anything.
 - **A shadow ledger.** Our own token counts and INR costs, written per call, so

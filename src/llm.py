@@ -1,8 +1,11 @@
-"""MetricAI-instrumented Azure OpenAI access.
+"""MetricAI-instrumented LLM access (Gemini for the cheap tier, Azure for smart).
 
-BYOK mode: our Azure key and endpoint travel as headers to the MetricAI proxy,
-which forwards the call, meters it, and attributes the spend. We never change
-how we call the OpenAI SDK -- only where it points.
+BYOK mode: our provider keys travel as headers to the MetricAI proxy, which
+forwards the call, meters it, and attributes the spend. We never change how we
+call the vendor SDKs -- only where they point:
+
+    cheap  -> Gemini        via mc.gemini_sdk()        (google-genai Client)
+    smart  -> Azure OpenAI  via mc.azure_openai_sdk()  (OpenAI Client)
 
 Every call carries four attribution dimensions:
     agent_id   -> which agent            (support-copilot)
@@ -40,12 +43,13 @@ class BudgetExceeded(RuntimeError):
 # --------------------------------------------------------------------------
 # Real client
 # --------------------------------------------------------------------------
-class MetricAIAzureClient:
+class MetricAIClient:
     def __init__(self) -> None:
         from metricai import MetricAI
 
         missing = [k for k, v in {
             "METRICAI_API_KEY": S.METRICAI_API_KEY,
+            "GEMINI_API_KEY": S.GEMINI_API_KEY,
             "AZURE_OPENAI_API_KEY": S.AZURE_API_KEY,
             "AZURE_OPENAI_ENDPOINT": S.AZURE_ENDPOINT,
         }.items() if not v]
@@ -59,11 +63,12 @@ class MetricAIAzureClient:
             api_key=S.METRICAI_API_KEY,
             mode="byok",
             llm_keys={
+                "gemini": S.GEMINI_API_KEY,
                 "azure_openai": S.AZURE_API_KEY,
                 "azure_openai_endpoint": S.AZURE_ENDPOINT,
                 "azure_openai_api_version": S.AZURE_API_VERSION,
             },
-            active_providers=("azure_openai",),
+            active_providers=("gemini", "azure_openai"),
             default_agent_id=S.AGENT_ID,
             # Metering must never take the product down. Fail open, and let the
             # shadow ledger catch anything MetricAI misses.
@@ -89,6 +94,7 @@ class MetricAIAzureClient:
         temperature: float = 0.2,
     ) -> LLMResult:
         deployment = S.DEPLOYMENTS[tier]
+        provider = S.PROVIDERS[tier]
 
         # Idempotency key: a retried *network* call must not double-bill, but a
         # genuine second revision attempt must, so `attempt` is part of the key.
@@ -96,7 +102,7 @@ class MetricAIAzureClient:
             f"{session_id}:{node_id}:{attempt}:{deployment}".encode()
         ).hexdigest()[:32]
 
-        client = self.mc.azure_openai_sdk(
+        attribution = dict(
             agent_id=S.AGENT_ID,
             user_id=tenant_id,
             session_id=session_id,
@@ -108,26 +114,82 @@ class MetricAIAzureClient:
 
         t0 = time.perf_counter()
         try:
-            resp = client.chat.completions.create(
-                model=deployment,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            if provider == "gemini":
+                result = self._complete_gemini(
+                    self.mc.gemini_sdk(**attribution), deployment, messages,
+                    max_tokens, temperature,
+                )
+            else:
+                result = self._complete_openai(
+                    self.mc.azure_openai_sdk(**attribution), deployment, messages,
+                    max_tokens, temperature,
+                )
         except Exception as exc:  # noqa: BLE001
             latency = int((time.perf_counter() - t0) * 1000)
             if _looks_like_budget_block(exc):
                 raise BudgetExceeded(str(exc)) from exc
             return LLMResult("", 0, 0, latency, error=f"{type(exc).__name__}: {exc}")
 
-        latency = int((time.perf_counter() - t0) * 1000)
+        result.latency_ms = int((time.perf_counter() - t0) * 1000)
+        return result
+
+    @staticmethod
+    def _complete_openai(client, deployment, messages, max_tokens, temperature) -> LLMResult:
+        resp = client.chat.completions.create(
+            model=deployment,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         usage = getattr(resp, "usage", None)
         return LLMResult(
             text=(resp.choices[0].message.content or "").strip(),
             input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             output_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            latency_ms=latency,
+            latency_ms=0,
             request_id=getattr(resp, "id", None),
+        )
+
+    @staticmethod
+    def _complete_gemini(client, model, messages, max_tokens, temperature) -> LLMResult:
+        """Same chat-style messages, translated to the google-genai shape.
+
+        OpenAI `system` -> Gemini `system_instruction`; `assistant` -> `model`.
+        """
+        from google.genai import types
+
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        contents = [
+            types.Content(
+                role="model" if m["role"] == "assistant" else "user",
+                parts=[types.Part.from_text(text=m["content"])],
+            )
+            for m in messages if m["role"] != "system"
+        ]
+        resp = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction="\n\n".join(system_parts) or None,
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+                # Gemini 3.x "thinks" by default and those hidden tokens count
+                # against max_output_tokens. Cheap-tier nodes want a short,
+                # structured answer, not deliberation -- keep thinking minimal
+                # or a 60-token triage call returns nothing but MAX_TOKENS.
+                thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
+            ),
+        )
+        usage = getattr(resp, "usage_metadata", None)
+        return LLMResult(
+            text=(resp.text or "").strip(),
+            input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+            # Gemini reports "thinking" tokens separately; they are billed as
+            # output, so fold them in to keep the shadow ledger honest.
+            output_tokens=(getattr(usage, "candidates_token_count", 0) or 0)
+                          + (getattr(usage, "thoughts_token_count", 0) or 0),
+            latency_ms=0,
+            request_id=getattr(resp, "response_id", None),
         )
 
 
@@ -190,4 +252,4 @@ def _mock_text(node_id: str, attempt: int, messages) -> str:
 
 
 def get_client(mock: bool = False):
-    return MockClient() if mock else MetricAIAzureClient()
+    return MockClient() if mock else MetricAIClient()

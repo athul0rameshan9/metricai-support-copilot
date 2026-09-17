@@ -13,7 +13,7 @@ go, and does that leave a margin.**
 ## The workflow
 
 ```
-ticket ──▶ triage (cheap model)
+ticket ──▶ triage (cheap model = Gemini)
               │
               ▼
           retrieve (local KB, free)
@@ -45,9 +45,10 @@ entitlements. That is what makes the margin table meaningful.
 
 ## MetricAI integration
 
-BYOK mode: our Azure OpenAI key, endpoint and API version travel as headers to
-the MetricAI proxy, which forwards the call, meters it, and attributes the
-spend. The OpenAI SDK call itself is unchanged — only its `base_url` moves.
+BYOK mode: our provider keys (Gemini for the cheap tier, Azure OpenAI for the
+smart tier) travel as headers to the MetricAI proxy, which forwards the call,
+meters it, and attributes the spend. The vendor SDK calls themselves are
+unchanged — only their `base_url` moves.
 
 ```python
 from metricai import MetricAI
@@ -56,14 +57,17 @@ mc = MetricAI(
     api_key=METRICAI_API_KEY,
     mode="byok",
     llm_keys={
+        "gemini": GEMINI_API_KEY,
         "azure_openai": AZURE_OPENAI_API_KEY,
         "azure_openai_endpoint": AZURE_OPENAI_ENDPOINT,
         "azure_openai_api_version": AZURE_OPENAI_API_VERSION,
     },
-    active_providers=("azure_openai",),
+    active_providers=("gemini", "azure_openai"),
     fail_open=True,          # metering must never take the product down
 )
 
+# smart tier (drafting) -> Azure; cheap tier -> mc.gemini_sdk(...) with the
+# same attribution kwargs, returning a google-genai Client.
 client = mc.azure_openai_sdk(
     agent_id="support-copilot",   # which agent
     user_id=tenant_id,            # which paying customer
@@ -95,7 +99,7 @@ local ledger is a second opinion that lets us:
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # fill in MetricAI + Azure OpenAI values
+cp .env.example .env        # fill in MetricAI + Gemini + Azure OpenAI values
 
 python -m src.run all --mock --reset   # no keys needed, deterministic
 python -m src.run baseline             # live, through MetricAI
