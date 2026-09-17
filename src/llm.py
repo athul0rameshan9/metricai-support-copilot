@@ -138,7 +138,11 @@ class MetricAIClient:
                    latency_ms: int, success: bool, result: dict) -> None:
         """Report a non-LLM tool call so it shows up in MetricAI beside the LLM steps."""
         self.mc.track(
-            tools=[{"name": name, "type": "function", "invoked": True}],
+            # `type` must be one of the SDK's recognised tool types -- an
+            # unrecognised string leaves `execution_type` unset and the event
+            # never reaches Tool Intelligence, so the Tools tab stays empty.
+            tools=[{"name": name, "type": "function_call", "invoked": True,
+                    "provider": S.AGENT_ID}],
             agent_id=S.AGENT_ID,
             user_id=tenant_id,
             session_id=session_id,
