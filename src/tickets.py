@@ -2,6 +2,14 @@
 from __future__ import annotations
 
 TICKETS: list[dict[str, str]] = [
+    # Outage tickets lead the run so the check_outage_status tool call is
+    # exercised early and for every tenant.
+    {"id": "T-2001", "tenant_id": "acme-retail",
+     "text": "Your API has been returning 503s for the last 20 minutes and our storefront checkout is completely down. Is there an active incident?"},
+    {"id": "T-2002", "tenant_id": "globex-saas",
+     "text": "Every user in our org gets a 502 error page on the dashboard and nobody can log in. Is this a platform-wide outage?"},
+    {"id": "T-2003", "tenant_id": "initech-bank",
+     "text": "All webhook deliveries stopped 15 minutes ago and your status page will not load. Is there an ongoing outage right now?"},
     {"id": "T-1001", "tenant_id": "acme-retail",
      "text": "I cancelled my annual plan last week and still have not seen a refund. When does it arrive?"},
     {"id": "T-1002", "tenant_id": "acme-retail",
