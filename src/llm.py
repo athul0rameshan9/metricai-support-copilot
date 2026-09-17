@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -133,6 +134,22 @@ class MetricAIClient:
         result.latency_ms = int((time.perf_counter() - t0) * 1000)
         return result
 
+    def track_tool(self, *, name: str, tenant_id: str, session_id: str, node_id: str,
+                   latency_ms: int, success: bool, result: dict) -> None:
+        """Report a non-LLM tool call so it shows up in MetricAI beside the LLM steps."""
+        self.mc.track(
+            tools=[{"name": name, "type": "function", "invoked": True}],
+            agent_id=S.AGENT_ID,
+            user_id=tenant_id,
+            session_id=session_id,
+            latency_ms=latency_ms,
+            success=success,
+            input_tokens=0,
+            output_tokens=0,
+            cost_inr=0.0,
+            extra={"node_id": node_id, "graph_id": S.GRAPH_ID, "result": result},
+        )
+
     @staticmethod
     def _complete_openai(client, deployment, messages, max_tokens, temperature) -> LLMResult:
         resp = client.chat.completions.create(
@@ -238,9 +255,15 @@ class MockClient:
         return LLMResult(text, in_tok, out_tok, latency_ms=120 + 40 * (tier == "smart"),
                          request_id=f"mock-{session_id}-{node_id}-{attempt}")
 
+    def track_tool(self, **kwargs) -> None:
+        """No-op: nothing to meter in mock mode."""
+
 
 def _mock_text(node_id: str, attempt: int, messages) -> str:
     if node_id == "triage":
+        text = " ".join(m["content"] for m in messages if m["role"] == "user").lower()
+        if re.search(r"\b(outage|down|incident|unreachable)\b", text):
+            return '{"category": "outage", "urgency": "high"}'
         return '{"category": "billing", "urgency": "high"}'
     if node_id == "critique":
         # First drafts often miss the bar -> produces real, observable retries.

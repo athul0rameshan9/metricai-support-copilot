@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from . import kb, settings as S
+from . import kb, settings as S, tools
 from .ledger import CallRecord, Ledger
 from .llm import BudgetExceeded, LLMResult
 
@@ -93,6 +94,25 @@ class SupportCopilot:
         ))
         return res
 
+    # -- one fake tool call, tracked in MetricAI and the shadow ledger --
+    def _tool_call(self, *, ctx: dict, name: str, fn, **kwargs) -> dict:
+        t0 = time.perf_counter()
+        result = fn(**kwargs)
+        latency = int((time.perf_counter() - t0) * 1000)
+        node_id = f"tool:{name}"
+        self.client.track_tool(
+            name=name, tenant_id=ctx["tenant_id"], session_id=ctx["session_id"],
+            node_id=node_id, latency_ms=latency, success=True, result=result,
+        )
+        self.ledger.write(CallRecord(
+            run_id=self.ledger.run_id, scenario=self.scenario,
+            ticket_id=ctx["ticket_id"], tenant_id=ctx["tenant_id"], plan=ctx["plan"],
+            session_id=ctx["session_id"], node_id=node_id, attempt=1,
+            tier="tool", deployment=name, input_tokens=0, output_tokens=0,
+            cost_inr_local=0.0, latency_ms=latency, ok=True,
+        ))
+        return result
+
     def run_ticket(self, ticket: dict[str, str]) -> TicketResult:
         tenant = S.TENANTS_BY_ID[ticket["tenant_id"]]
         plan = tenant.plan_obj
@@ -134,6 +154,19 @@ class SupportCopilot:
             category = str(_json_field(triage.text, "category", "billing"))
             urgency = str(_json_field(triage.text, "urgency", "medium"))
 
+            # 1b. Outage tickets: ask the (fake) status page before drafting, so
+            # the answer says whether an incident is actually open.
+            status_note = ""
+            if category == "outage":
+                status = self._tool_call(
+                    ctx=ctx, name="check_outage_status", fn=tools.check_outage_status,
+                    category=category, seed=ticket["id"])
+                status_note = (
+                    "\n\nLive status check: "
+                    + (f"OUTAGE CONFIRMED, ETA {status['eta_minutes']} min."
+                       if status["outage"] else "no incident open; all systems operational.")
+                )
+
             # 2. Retrieve -- free, but it inflates the draft prompt.
             n = 2 if plan.use_kb_enrichment else 1
             articles = kb.retrieve(category, ticket["text"], limit=n)
@@ -159,7 +192,7 @@ class SupportCopilot:
                          "context. Cite article ids in square brackets. Be concise and warm."},
                         {"role": "user", "content":
                          f"Ticket ({category}, urgency {urgency}):\n{ticket['text']}\n\n"
-                         f"Knowledge base:\n{context}{feedback}"},
+                         f"Knowledge base:\n{context}{status_note}{feedback}"},
                     ])
                 c = account(draft, draft_tier)
                 draft_costs.append(c)
