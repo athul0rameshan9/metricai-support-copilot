@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+out/*.jsonl
+out/*.md
+.venv/
